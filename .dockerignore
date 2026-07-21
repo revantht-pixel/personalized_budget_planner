@@ -1,0 +1,15 @@
+.git
+.agents
+.pdf_deps
+.venv
+__pycache__
+*.py[cod]
+*.db
+*.sqlite*
+*.log
+.env
+.coverage
+.pytest_cache
+build
+dist
+*.egg-info

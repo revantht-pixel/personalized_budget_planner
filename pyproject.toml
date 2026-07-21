@@ -1,0 +1,23 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "financial-engine"
+version = "0.1.0"
+description = "An immutable, double-entry personal-finance ledger engine"
+requires-python = ">=3.12"
+dependencies = []
+
+[project.scripts]
+financial-engine-demo = "financial_engine.demo:main"
+financial-engine-web = "financial_engine.webapp:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+financial_engine = ["static/*"]

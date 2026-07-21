@@ -1,0 +1,23 @@
+name: financial-engine
+
+services:
+  financial-engine:
+    build:
+      context: .
+    image: financial-engine:local
+    restart: unless-stopped
+    init: true
+    ports:
+      - "127.0.0.1:${FINANCIAL_ENGINE_PORT:-8765}:8080"
+    volumes:
+      - financial_engine_data:/data
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+
+volumes:
+  financial_engine_data:
