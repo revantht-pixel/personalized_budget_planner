@@ -231,8 +231,8 @@ class WebAppTests(unittest.TestCase):
     def test_dashboard_static_entrypoint_is_served(self) -> None:
         with urlopen(self.base_url + "/", timeout=5) as response:
             content = response.read().decode("utf-8")
-        self.assertIn("Financial Engine", content)
-        self.assertIn("Rules, not AI", content)
+        self.assertIn("Budget Planner", content)
+        self.assertIn("Ways to save", content)
 
     def test_health_endpoint_checks_database(self) -> None:
         self.assertEqual(self.request("/healthz"), {"status": "ok"})

@@ -121,9 +121,18 @@ class UsabilityFeatureTests(unittest.TestCase):
         rows = {row["description"]: row for row in self.import_card()["rows"]}
         self.assertEqual(rows["SHELL OIL 5741"]["suggested_account_code"], "Expenses:Transport")
 
-        rule_id = self.get("/api/rules")["rules"][0]["id"]
+        self.post("/api/transactions", self.expense(description="Costco",
+                                                    category_code="Expenses:Groceries"))
+        self.assertEqual(
+            self.get("/api/rules/suggest?text=Costco%20run")["account_code"],
+            "Expenses:Groceries",
+        )
+
+        rule_id = next(rule["id"] for rule in self.get("/api/rules")["rules"]
+                       if rule["merchant_key"] == "SHELL OIL")
         self.post(f"/api/rules/{rule_id}/delete", {})
-        self.assertEqual(self.get("/api/rules")["rules"], [])
+        self.assertEqual([rule["merchant_key"] for rule in self.get("/api/rules")["rules"]],
+                         ["COSTCO"])
 
     # Bulk review --------------------------------------------------------------
 

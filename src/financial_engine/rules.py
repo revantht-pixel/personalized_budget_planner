@@ -42,6 +42,16 @@ def merchant_key(text: str | None) -> str | None:
     return " ".join(tokens[:_KEY_TOKENS]) or None
 
 
+def _candidate_keys(text: str | None) -> tuple[str, ...]:
+    """Keys to try, most specific first: ``COSTCO RUN`` falls back to ``COSTCO``."""
+
+    key = merchant_key(text)
+    if key is None:
+        return ()
+    first = key.split()[0]
+    return (key,) if first == key else (key, first)
+
+
 class RuleService:
     def __init__(self, ledger: Ledger) -> None:
         self.ledger = ledger
@@ -49,20 +59,18 @@ class RuleService:
     def suggest(self, text: str | None, *, exclude_account_id: str | None = None) -> str | None:
         """Return the account code a matching rule suggests, if any."""
 
-        key = merchant_key(text)
-        if key is None:
-            return None
-        row = self.ledger.connection.execute(
-            """
-            SELECT a.id, a.code FROM categorization_rules r
-            JOIN accounts a ON a.id = r.account_id
-            WHERE r.merchant_key = ? AND a.is_active = 1
-            """,
-            (key,),
-        ).fetchone()
-        if row is None or row["id"] == exclude_account_id:
-            return None
-        return row["code"]
+        for key in _candidate_keys(text):
+            row = self.ledger.connection.execute(
+                """
+                SELECT a.id, a.code FROM categorization_rules r
+                JOIN accounts a ON a.id = r.account_id
+                WHERE r.merchant_key = ? AND a.is_active = 1
+                """,
+                (key,),
+            ).fetchone()
+            if row is not None:
+                return None if row["id"] == exclude_account_id else row["code"]
+        return None
 
     def learn(self, text: str | None, account_code: str) -> CategorizationRule | None:
         """Remember that this merchant belongs in ``account_code``."""
@@ -123,7 +131,7 @@ class RuleService:
             """
         ).fetchall()
         for row in rows:
-            if row["account_id"] != account_id and merchant_key(row["description"]) == key:
+            if row["account_id"] != account_id and key in _candidate_keys(row["description"]):
                 self.ledger.connection.execute(
                     "UPDATE statement_import_rows SET suggested_account_id = ? WHERE id = ?",
                     (account_id, row["id"]),
