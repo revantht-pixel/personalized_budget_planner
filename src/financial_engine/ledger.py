@@ -7,7 +7,7 @@ import json
 import re
 import sqlite3
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from pathlib import Path
 from typing import Iterable, Iterator, Sequence
 from uuid import uuid4
@@ -18,6 +18,7 @@ from .errors import (
     DuplicateAccount,
     IdempotencyConflict,
     InvalidTransaction,
+    PeriodLocked,
     TransactionNotFound,
 )
 from .models import (
@@ -506,6 +507,7 @@ class Ledger:
             if not row["is_active"]:
                 raise InvalidTransaction(f"account is inactive: {item.account_code}")
             account_rows[item.account_code] = row
+        self._check_period_lock(effective_at_iso, {row["id"] for row in account_rows.values()})
 
         created_at = _utc_now_iso()
         self.connection.execute(
@@ -561,6 +563,33 @@ class Ledger:
             (posted_at, transaction_id),
         )
         return transaction_id
+
+    def _check_period_lock(self, effective_at_iso: str, account_ids: set[str]) -> None:
+        """Reject postings that would change a balance a completed statement already matched."""
+
+        placeholders = ",".join("?" * len(account_ids))
+        locked = self.connection.execute(
+            f"""
+            SELECT a.name, max(r.statement_date) AS locked_through
+            FROM reconciliations r
+            JOIN accounts a ON a.id = r.account_id
+            WHERE r.account_id IN ({placeholders})
+            GROUP BY a.id
+            ORDER BY locked_through DESC
+            """,
+            tuple(account_ids),
+        ).fetchall()
+        for row in locked:
+            locked_through = date.fromisoformat(row["locked_through"])
+            boundary = datetime.combine(
+                locked_through + timedelta(days=1), time.min, tzinfo=timezone.utc
+            )
+            if effective_at_iso < boundary.isoformat(timespec="microseconds"):
+                raise PeriodLocked(
+                    f"{row['name']} is reconciled through {locked_through.isoformat()}, so "
+                    "entries dated on or before that day can't be added, edited, or deleted. "
+                    "Use a later date instead."
+                )
 
     def reverse_transaction(
         self,

@@ -13,6 +13,10 @@ class CurrencyMismatch(InvalidTransaction):
     """A transaction mixes currencies without explicit FX handling."""
 
 
+class PeriodLocked(InvalidTransaction):
+    """A posting falls on or before an account's latest completed reconciliation."""
+
+
 class IdempotencyConflict(LedgerError):
     """A source identifier was reused for different financial content."""
 
