@@ -26,22 +26,49 @@ from .statement_imports import StatementImportService
 
 STATIC_ROOT = Path(__file__).with_name("static")
 ALLOWED_STATIC = {"index.html", "styles.css", "app.js"}
+# One trillion dollars in cents; far beyond personal use, well inside SQLite's int64.
+MAX_AMOUNT_MINOR = 100_000_000_000_000
+DEFAULT_ALLOWED_HOSTS =frozenset({"127.0.0.1", "localhost", "::1"})
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": (
+        "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; "
+        "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
+        "base-uri 'none'; form-action 'self'"
+    ),
+}
+
+
+class RequestRejected(Exception):
+    """The request failed a browser-origin safety check."""
 
 
 class FinancialAppServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, address: tuple[str, int], database: Path) -> None:
+    def __init__(
+        self,
+        address: tuple[str, int],
+        database: Path,
+        *,
+        allowed_hosts: frozenset[str] | set[str] = DEFAULT_ALLOWED_HOSTS,
+    ) -> None:
         self.database = database
+        self.allowed_hosts = frozenset(host.lower() for host in allowed_hosts)
         super().__init__(address, FinancialRequestHandler)
 
 
 class FinancialRequestHandler(BaseHTTPRequestHandler):
     server: FinancialAppServer
+    # Drop idle or trickling connections instead of holding a thread forever.
+    timeout = 30
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            self._require_allowed_host()
             if parsed.path == "/healthz":
                 with Ledger(self.server.database) as ledger:
                     ledger.connection.execute("SELECT 1").fetchone()
@@ -91,6 +118,8 @@ class FinancialRequestHandler(BaseHTTPRequestHandler):
     def do_POST(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
         try:
+            self._require_allowed_host()
+            self._require_same_origin_json()
             payload = self._read_json()
             if parsed.path == "/api/accounts":
                 self._create_account(payload)
@@ -402,6 +431,40 @@ class FinancialRequestHandler(BaseHTTPRequestHandler):
                 )
                 self._send_json({"proposal": _proposal_json(proposal)})
 
+    def _require_allowed_host(self) -> None:
+        """Reject foreign Host headers so DNS rebinding cannot reach the API."""
+
+        hostname = _hostname(self.headers.get("Host", ""))
+        if hostname not in self.server.allowed_hosts:
+            raise RequestRejected("unrecognized Host header")
+
+    def _require_same_origin_json(self) -> None:
+        """Block cross-site writes (CSRF).
+
+        Requiring application/json forces a CORS preflight for any cross-origin
+        caller, which this server never approves. Origin and Sec-Fetch-Site are
+        checked as well for browsers that send them.
+        """
+
+        content_type = self.headers.get("Content-Type", "").split(";")[0].strip().lower()
+        if content_type != "application/json":
+            raise RequestRejected("Content-Type must be application/json")
+        if self.headers.get("Sec-Fetch-Site", "same-origin") not in {"same-origin", "none"}:
+            raise RequestRejected("cross-site requests are not allowed")
+        origin = self.headers.get("Origin")
+        if origin is not None:
+            parsed_origin = urlparse(origin)
+            same_host = _hostname(parsed_origin.netloc) == _hostname(
+                self.headers.get("Host", "")
+            )
+            if parsed_origin.scheme not in {"http", "https"} or not same_host:
+                raise RequestRejected("cross-origin requests are not allowed")
+
+    def end_headers(self) -> None:
+        for name, value in SECURITY_HEADERS.items():
+            self.send_header(name, value)
+        super().end_headers()
+
     def _read_json(self) -> dict[str, Any]:
         try:
             length = int(self.headers.get("Content-Length", "0"))
@@ -427,8 +490,15 @@ class FinancialRequestHandler(BaseHTTPRequestHandler):
         self.wfile.write(content)
 
     def _send_error_json(self, exc: Exception) -> None:
-        status = HTTPStatus.BAD_REQUEST if isinstance(exc, (ValueError, LedgerError)) else HTTPStatus.INTERNAL_SERVER_ERROR
-        message = str(exc) if status is HTTPStatus.BAD_REQUEST else "An unexpected error occurred"
+        if isinstance(exc, RequestRejected):
+            status = HTTPStatus.FORBIDDEN
+        elif isinstance(exc, (ValueError, LedgerError)):
+            status = HTTPStatus.BAD_REQUEST
+        else:
+            status = HTTPStatus.INTERNAL_SERVER_ERROR
+        message = (
+            str(exc) if status is not HTTPStatus.INTERNAL_SERVER_ERROR else "An unexpected error occurred"
+        )
         self._send_json({"error": message}, status=status)
 
     def _send_static(self, filename: str) -> None:
@@ -453,10 +523,20 @@ def main() -> None:
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", default=8080, type=int)
     parser.add_argument("--db", default="financial_engine.db", type=Path)
+    parser.add_argument(
+        "--allowed-host",
+        action="append",
+        default=[],
+        help="extra hostname browsers may use to reach the app (repeatable)",
+    )
     args = parser.parse_args()
     database = args.db.resolve()
     prepare_database(database)
-    server = FinancialAppServer((args.host, args.port), database)
+    server = FinancialAppServer(
+        (args.host, args.port),
+        database,
+        allowed_hosts=DEFAULT_ALLOWED_HOSTS | set(args.allowed_host),
+    )
     print(f"Financial Engine: http://{args.host}:{args.port}")
     print(f"Database: {database}")
     print("AI integration: disabled")
@@ -697,6 +777,8 @@ def _signed_integer(payload: dict[str, Any], key: str) -> int:
     value = payload.get(key)
     if isinstance(value, bool) or not isinstance(value, int):
         raise ValueError(f"{key} must be an integer")
+    if abs(value) > MAX_AMOUNT_MINOR:
+        raise ValueError(f"{key} is too large")
     return value
 
 
@@ -705,7 +787,18 @@ def _optional_integer(value: object, *, minimum: int) -> int | None:
         return None
     if isinstance(value, bool) or not isinstance(value, int) or value < minimum:
         raise ValueError(f"value must be an integer greater than or equal to {minimum}")
+    if value > MAX_AMOUNT_MINOR:
+        raise ValueError("amount is too large")
     return value
+
+
+def _hostname(netloc: str) -> str:
+    """Return the lowercase hostname from a Host header or URL netloc."""
+
+    netloc = netloc.strip().lower()
+    if netloc.startswith("["):
+        return netloc[1:].split("]", 1)[0]
+    return netloc.rsplit(":", 1)[0] if netloc.count(":") == 1 else netloc
 
 
 def _current_month() -> str:
