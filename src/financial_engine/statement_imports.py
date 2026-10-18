@@ -8,7 +8,7 @@ import io
 import json
 import re
 from datetime import date, datetime, time, timedelta, timezone
-from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from decimal import Decimal, ROUND_HALF_UP
 from pathlib import PurePath
 from uuid import uuid4
 
@@ -74,7 +74,20 @@ class StatementImportService:
         batch_id = str(uuid4())
         created_at = _utc_now_iso()
         staged: list[dict[str, object]] = []
+        # Overlapping statement exports repeat rows already staged. The nth copy of a
+        # row in this file is a duplicate only if the account already has n such rows,
+        # so two identical same-day charges in one file still both import.
+        seen: dict[tuple[str, str], int] = {}
         for row_number, parsed in enumerate(parsed_rows, 1):
+            parsed["row_hash"] = _row_hash(parsed)
+            key = (
+                ("external_id", parsed["external_id"])
+                if parsed["external_id"]
+                else ("row_hash", parsed["row_hash"])
+            )
+            seen[key] = seen.get(key, 0) + 1
+            if seen[key] <= self._count_staged(account, *key):
+                continue
             match_id = None
             workflow_status = (
                 ImportRowStatus.PENDING
@@ -128,11 +141,6 @@ class StatementImportService:
                 ),
             )
             for item in staged:
-                row_hash = hashlib.sha256(
-                    f"{item['effective_date']}|{item['description']}|{item['amount_minor']}".encode(
-                        "utf-8"
-                    )
-                ).hexdigest()
                 self.ledger.connection.execute(
                     """
                     INSERT INTO statement_import_rows(
@@ -148,7 +156,7 @@ class StatementImportService:
                         account.id,
                         item["row_number"],
                         item["external_id"],
-                        row_hash,
+                        item["row_hash"],
                         item["effective_date"].isoformat(),
                         item["description"],
                         item["amount_minor"],
@@ -306,6 +314,17 @@ class StatementImportService:
             raise StatementImportNotFound(f"unknown statement row: {row_id}")
         return row, self.ledger.get_account(row["account_code"])
 
+    def _count_staged(self, account: Account, column: str, value: str) -> int:
+        assert column in {"external_id", "row_hash"}
+        row = self.ledger.connection.execute(
+            f"""
+            SELECT count(*) AS n FROM statement_import_rows
+            WHERE account_id = ? AND {column} = ? AND workflow_status <> 'IGNORED'
+            """,
+            (account.id, value),
+        ).fetchone()
+        return row["n"]
+
     def _find_exact_ledger_match(
         self, account: Account, effective_date: date, amount_minor: int
     ) -> str | None:
@@ -381,7 +400,8 @@ def _parse_csv(
             else:
                 debit = _parse_money(str(raw.get(debit_header) or ""), blank_zero=True)
                 credit = _parse_money(str(raw.get(credit_header) or ""), blank_zero=True)
-                amount_minor = credit - debit
+                # Debit/Credit columns hold magnitudes; the column gives the direction.
+                amount_minor = abs(credit) - abs(debit)
             if amount_minor == 0:
                 raise ValueError("zero-value rows are not importable")
         except ValueError as exc:
@@ -408,6 +428,11 @@ def _parse_csv(
     if len(parsed) > 5_000:
         raise ValueError("one import is limited to 5,000 rows")
     return parsed
+
+
+def _row_hash(parsed: dict[str, object]) -> str:
+    content = f"{parsed['effective_date']}|{parsed['description']}|{parsed['amount_minor']}"
+    return hashlib.sha256(content.encode("utf-8")).hexdigest()
 
 
 def _default_suggestion(account: Account, amount_minor: int) -> str | None:
@@ -463,17 +488,30 @@ def _parse_date(value: str) -> date:
     raise ValueError(f"unsupported date: {value!r}")
 
 
+_MAX_AMOUNT_MINOR = 100_000_000_000_000
+
+
 def _parse_money(value: str, *, blank_zero: bool = False) -> int:
     cleaned = value.strip()
     if not cleaned and blank_zero:
         return 0
-    negative_parentheses = cleaned.startswith("(") and cleaned.endswith(")")
+    negate = cleaned.startswith("(") and cleaned.endswith(")")
     cleaned = cleaned.strip("()").replace("$", "").replace(",", "").strip()
-    cleaned = re.sub(r"\s*(CR|DR)$", "", cleaned, flags=re.IGNORECASE)
-    try:
-        amount = Decimal(cleaned)
-    except InvalidOperation as exc:
-        raise ValueError(f"invalid amount: {value!r}") from exc
-    if negative_parentheses:
+    suffix = re.search(r"\s*(CR|DR)$", cleaned, flags=re.IGNORECASE)
+    if suffix is not None:
+        cleaned = cleaned[: suffix.start()]
+    if cleaned.endswith("-") and not cleaned.startswith(("-", "+")):
+        negate = True
+        cleaned = cleaned[:-1].strip()
+    # Plain decimals only: Decimal() would also accept "1e30", "NaN", and "Infinity".
+    if not re.fullmatch(r"[+-]?(\d+(\.\d*)?|\.\d+)", cleaned):
+        raise ValueError(f"invalid amount: {value!r}")
+    amount = Decimal(cleaned)
+    if negate:
         amount = -amount
+    if suffix is not None:
+        # DR/CR state the direction outright, whatever sign the number carries.
+        amount = -abs(amount) if suffix.group(1).upper() == "DR" else abs(amount)
+    if abs(amount) * 100 > _MAX_AMOUNT_MINOR:
+        raise ValueError(f"amount is too large: {value!r}")
     return int((amount * 100).quantize(Decimal("1"), rounding=ROUND_HALF_UP))

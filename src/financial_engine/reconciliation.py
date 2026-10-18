@@ -82,9 +82,10 @@ class ReconciliationService:
             (preview.account.id, statement_date.isoformat()),
         ).fetchone()
         if existing is not None:
-            if existing["statement_balance_minor"] != statement_balance_minor:
+            record = _record_from_row(existing, preview.account)
+            if record.statement_balance_minor != statement_balance_minor:
                 raise IdempotencyConflict("statement date was already reconciled to another balance")
-            return _record_from_row(existing, preview.account)
+            return record
 
         record_id = str(uuid4())
         created_at = _utc_now_iso()

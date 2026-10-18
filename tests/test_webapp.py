@@ -101,7 +101,7 @@ class WebAppTests(unittest.TestCase):
             "/api/reconciliations/preview",
             {
                 "account_code": account_code,
-                "statement_date": "2026-07-31",
+                "statement_date": "2026-07-19",
                 "statement_balance_minor": 9_500,
             },
         )
@@ -110,7 +110,7 @@ class WebAppTests(unittest.TestCase):
             "/api/reconciliations/complete",
             {
                 "account_code": account_code,
-                "statement_date": "2026-07-31",
+                "statement_date": "2026-07-19",
                 "statement_balance_minor": 9_500,
                 "completed_by": "test-user",
             },
