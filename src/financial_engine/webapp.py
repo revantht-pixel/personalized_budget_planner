@@ -22,6 +22,7 @@ from .ledger import Ledger
 from .models import AccountKind, AccountType, PostingInput
 from .proposals import ProposalService
 from .reconciliation import ReconciliationService
+from .rules import RuleService, merchant_key
 from .statement_imports import StatementImportService
 
 STATIC_ROOT = Path(__file__).with_name("static")
@@ -103,6 +104,16 @@ class FinancialRequestHandler(BaseHTTPRequestHandler):
             if transaction_match:
                 self._send_json(self._transaction_detail(transaction_match.group(1)))
                 return
+            if parsed.path == "/api/rules":
+                with Ledger(self.server.database) as ledger:
+                    rules = RuleService(ledger).list_rules()
+                    self._send_json({"rules": [_rule_json(item) for item in rules]})
+                return
+            if parsed.path == "/api/rules/suggest":
+                text = parse_qs(parsed.query).get("text", [""])[0]
+                with Ledger(self.server.database) as ledger:
+                    self._send_json({"account_code": RuleService(ledger).suggest(text)})
+                return
             if parsed.path == "/api/reconciliations":
                 account_code = parse_qs(parsed.query).get("account_code", [""])[0]
                 self._send_json(self._reconciliation_history(account_code))
@@ -139,6 +150,19 @@ class FinancialRequestHandler(BaseHTTPRequestHandler):
             if parsed.path == "/api/reconciliations/complete":
                 self._complete_reconciliation(payload)
                 return
+            if parsed.path == "/api/import-rows/bulk":
+                self._review_import_rows_bulk(payload)
+                return
+            rule_match = re.fullmatch(r"/api/rules/([^/]+)/delete", parsed.path)
+            if rule_match:
+                with Ledger(self.server.database) as ledger:
+                    RuleService(ledger).delete_rule(rule_match.group(1))
+                self._send_json({"deleted": rule_match.group(1)})
+                return
+            edit_match = re.fullmatch(r"/api/transactions/([^/]+)/edit", parsed.path)
+            if edit_match:
+                self._edit_transaction(edit_match.group(1), payload)
+                return
             reverse_match = re.fullmatch(r"/api/transactions/([^/]+)/reverse", parsed.path)
             if reverse_match:
                 self._reverse_transaction(reverse_match.group(1), payload)
@@ -166,8 +190,10 @@ class FinancialRequestHandler(BaseHTTPRequestHandler):
         validate_month(month)
         with Ledger(self.server.database) as ledger:
             accounts = ledger.list_account_overviews()
-            summary = AnalyticsService(ledger).monthly_spending(month=month)
-            transactions = ledger.list_transactions(limit=12)
+            analytics = AnalyticsService(ledger)
+            summary = analytics.monthly_spending(month=month)
+            cash_flow = analytics.cash_flow(month=month, currency=summary.currency)
+            transactions = ledger.list_transactions(limit=12, hide_corrected=True)
             review_count = len(ProposalService(ledger).review_queue(limit=500)) + len(
                 StatementImportService(ledger).review_queue(limit=500)
             )
@@ -209,6 +235,16 @@ class FinancialRequestHandler(BaseHTTPRequestHandler):
                     {"code": item.code, "name": item.name} for item in income_accounts
                 ],
                 "review_count": review_count,
+                "cash_flow": [
+                    {
+                        "month": item.month,
+                        "income_minor": item.income_minor,
+                        "spent_minor": item.spent_minor,
+                        "net_minor": item.net_minor,
+                        "savings_rate": item.savings_rate,
+                    }
+                    for item in cash_flow
+                ],
                 "ai": {"enabled": False, "status": "Not configured"},
             }
 
@@ -216,7 +252,9 @@ class FinancialRequestHandler(BaseHTTPRequestHandler):
         with Ledger(self.server.database) as ledger:
             overview = ledger.get_account_overview(account_code)
             all_overviews = {item.account.code: item for item in ledger.list_account_overviews()}
-            transactions = ledger.list_transactions_for_account(account_code, limit=30)
+            transactions = ledger.list_transactions_for_account(
+                account_code, limit=30, hide_corrected=True
+            )
             reconciliations = ReconciliationService(ledger).history(account_code)
             return {
                 "account": _account_json(overview),
@@ -267,6 +305,7 @@ class FinancialRequestHandler(BaseHTTPRequestHandler):
                 "reversal_of_transaction_id": transaction.reversal_of_transaction_id,
                 "reversed_by_transaction_id": reversal["id"] if reversal else None,
                 "postings": postings,
+                "edit": _edit_form(ledger, transaction),
             }
 
     def _reconciliation_history(self, account_code: str) -> dict[str, Any]:
@@ -295,42 +334,42 @@ class FinancialRequestHandler(BaseHTTPRequestHandler):
             self._send_json({"account": _account_json(overview)}, status=HTTPStatus.CREATED)
 
     def _create_transaction(self, payload: dict[str, Any]) -> None:
-        transaction_kind = _string(payload, "kind").lower()
-        amount = _integer(payload, "amount_minor", minimum=1)
         effective_at = _date_at_noon(_string(payload, "effective_at"))
         description = _string(payload, "description")
+        merchant_name = str(payload.get("merchant_name") or "").strip() or None
         request_id = str(payload.get("request_id") or uuid4())
         with Ledger(self.server.database) as ledger:
-            if transaction_kind == "expense":
-                account_code = _string(payload, "account_code")
-                category_code = _string(payload, "category_code")
-                postings = (
-                    PostingInput(category_code, amount),
-                    PostingInput(account_code, -amount),
-                )
-            elif transaction_kind == "income":
-                account_code = _string(payload, "account_code")
-                postings = (
-                    PostingInput(account_code, amount),
-                    PostingInput("Income:Other", -amount),
-                )
-            elif transaction_kind == "transfer":
-                from_code = _string(payload, "from_account_code")
-                to_code = _string(payload, "to_account_code")
-                if from_code == to_code:
-                    raise ValueError("transfer accounts must be different")
-                postings = (PostingInput(from_code, -amount), PostingInput(to_code, amount))
-            else:
-                raise ValueError("transaction kind must be expense, income, or transfer")
+            postings = _postings_from_payload(ledger, payload)
             transaction = ledger.post_transaction(
                 effective_at=effective_at,
                 description=description,
-                merchant_name=str(payload.get("merchant_name") or "").strip() or None,
+                merchant_name=merchant_name,
                 source_type="WEB_UI",
                 source_id=request_id,
                 postings=postings,
             )
+            _learn_category(ledger, payload, merchant_name or description)
             self._send_json({"transaction_id": transaction.id}, status=HTTPStatus.CREATED)
+
+    def _edit_transaction(self, transaction_id: str, payload: dict[str, Any]) -> None:
+        effective_at = _date_at_noon(_string(payload, "effective_at"))
+        description = _string(payload, "description")
+        merchant_name = str(payload.get("merchant_name") or "").strip() or None
+        with Ledger(self.server.database) as ledger:
+            original = ledger.get_transaction(transaction_id)
+            if _is_corrected(ledger, original.id):
+                raise ValueError("this transaction was already deleted or edited")
+            if _edit_form(ledger, original) is None:
+                raise ValueError("only simple expense, income, and transfer entries can be edited")
+            transaction = ledger.replace_transaction(
+                transaction_id,
+                effective_at=effective_at,
+                description=description,
+                merchant_name=merchant_name,
+                postings=_postings_from_payload(ledger, payload),
+            )
+            _learn_category(ledger, payload, merchant_name or description)
+            self._send_json({"transaction_id": transaction.id})
 
     def _set_budget(self, payload: dict[str, Any]) -> None:
         month = _string(payload, "month")
@@ -379,6 +418,38 @@ class FinancialRequestHandler(BaseHTTPRequestHandler):
                     reviewed_by=str(payload.get("reviewed_by") or "local-user"),
                 )
             self._send_json({"row": _import_row_json(row)})
+
+    def _review_import_rows_bulk(self, payload: dict[str, Any]) -> None:
+        items = payload.get("rows")
+        if not isinstance(items, list) or not 1 <= len(items) <= 500:
+            raise ValueError("rows must be a list of 1 to 500 review actions")
+        reviewed_by = str(payload.get("reviewed_by") or "local-user")
+        posted = ignored = 0
+        failed: list[dict[str, str]] = []
+        with Ledger(self.server.database) as ledger:
+            imports = StatementImportService(ledger)
+            for item in items:
+                row_id = str(item.get("id") or "") if isinstance(item, dict) else ""
+                try:
+                    if not row_id:
+                        raise ValueError("each action needs a row id")
+                    action = item.get("action")
+                    if action == "post":
+                        imports.post_row(
+                            row_id,
+                            category_code=_string(item, "category_code"),
+                            reviewed_by=reviewed_by,
+                        )
+                        posted += 1
+                    elif action == "ignore":
+                        imports.ignore_row(row_id, reviewed_by=reviewed_by)
+                        ignored += 1
+                    else:
+                        raise ValueError("action must be post or ignore")
+                except (ValueError, LedgerError) as exc:
+                    # Rows are independent; one bad row should not block the rest.
+                    failed.append({"id": row_id, "error": str(exc)})
+        self._send_json({"posted": posted, "ignored": ignored, "failed": failed})
 
     def _reverse_transaction(self, transaction_id: str, payload: dict[str, Any]) -> None:
         effective_at = _date_at_noon(str(payload.get("effective_at") or _today()))
@@ -723,6 +794,96 @@ def _import_row_json(item: object) -> dict[str, Any]:
         "matched_transaction_id": item.matched_transaction_id,
         "suggested_account_code": item.suggested_account_code,
         "posted_transaction_id": item.posted_transaction_id,
+        "merchant_key": merchant_key(item.description),
+    }
+
+
+_BALANCE_TYPES = {AccountType.ASSET, AccountType.LIABILITY}
+
+
+def _postings_from_payload(ledger: Ledger, payload: dict[str, Any]) -> tuple[PostingInput, ...]:
+    """Build and type-check the two postings behind a simple web-entered transaction."""
+
+    kind = _string(payload, "kind").lower()
+    amount = _integer(payload, "amount_minor", minimum=1)
+
+    def account_of(key: str, allowed: set[AccountType], label: str) -> str:
+        code = _string(payload, key)
+        if ledger.get_account(code).type not in allowed:
+            raise ValueError(f"choose a valid {label}")
+        return code
+
+    if kind == "expense":
+        account_code = account_of("account_code", _BALANCE_TYPES, "paid-from account")
+        category_code = account_of("category_code", {AccountType.EXPENSE}, "category")
+        return (PostingInput(category_code, amount), PostingInput(account_code, -amount))
+    if kind == "income":
+        account_code = account_of("account_code", _BALANCE_TYPES, "deposit account")
+        payload.setdefault("category_code", "Income:Other")
+        category_code = account_of("category_code", {AccountType.INCOME}, "income category")
+        return (PostingInput(account_code, amount), PostingInput(category_code, -amount))
+    if kind == "transfer":
+        from_code = account_of("from_account_code", _BALANCE_TYPES, "from account")
+        to_code = account_of("to_account_code", _BALANCE_TYPES, "to account")
+        if from_code == to_code:
+            raise ValueError("transfer accounts must be different")
+        return (PostingInput(from_code, -amount), PostingInput(to_code, amount))
+    raise ValueError("transaction kind must be expense, income, or transfer")
+
+
+def _edit_form(ledger: Ledger, transaction: object) -> dict[str, Any] | None:
+    """Describe a transaction as the simple form that created it, or None if it isn't one."""
+
+    if (
+        len(transaction.postings) != 2
+        or transaction.reversal_of_transaction_id is not None
+        or transaction.source_type in {"OPENING_BALANCE", "REVERSAL"}
+    ):
+        return None
+    if _is_corrected(ledger, transaction.id):
+        return None
+    typed = [(ledger.get_account(p.account_code).type, p) for p in transaction.postings]
+    by_type = {account_type: posting for account_type, posting in typed}
+    base = {
+        "description": transaction.description,
+        "merchant_name": transaction.merchant_name,
+        "effective_at": transaction.effective_at.date().isoformat(),
+    }
+    balance = [p for t, p in typed if t in _BALANCE_TYPES]
+    if AccountType.EXPENSE in by_type and len(balance) == 1 and by_type[AccountType.EXPENSE].amount_minor > 0:
+        return {**base, "kind": "expense", "amount_minor": by_type[AccountType.EXPENSE].amount_minor,
+                "account_code": balance[0].account_code,
+                "category_code": by_type[AccountType.EXPENSE].account_code}
+    if AccountType.INCOME in by_type and len(balance) == 1 and balance[0].amount_minor > 0:
+        return {**base, "kind": "income", "amount_minor": balance[0].amount_minor,
+                "account_code": balance[0].account_code,
+                "category_code": by_type[AccountType.INCOME].account_code}
+    if len(balance) == 2:
+        source, target = sorted(balance, key=lambda p: p.amount_minor)
+        return {**base, "kind": "transfer", "amount_minor": target.amount_minor,
+                "from_account_code": source.account_code, "to_account_code": target.account_code}
+    return None
+
+
+def _is_corrected(ledger: Ledger, transaction_id: str) -> bool:
+    return ledger.connection.execute(
+        "SELECT 1 FROM transactions WHERE reversal_of_transaction_id = ? AND status = 'POSTED'",
+        (transaction_id,),
+    ).fetchone() is not None
+
+
+def _learn_category(ledger: Ledger, payload: dict[str, Any], text: str) -> None:
+    if payload.get("kind", "").lower() in {"expense", "income"} and payload.get("category_code"):
+        RuleService(ledger).learn(text, payload["category_code"])
+
+
+def _rule_json(item: object) -> dict[str, Any]:
+    return {
+        "id": item.id,
+        "merchant_key": item.merchant_key,
+        "account_code": item.account_code,
+        "account_name": item.account_name,
+        "times_used": item.times_used,
     }
 
 

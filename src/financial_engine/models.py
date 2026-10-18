@@ -263,3 +263,23 @@ class StatementImportBatch:
     row_count: int
     created_at: datetime
     rows: tuple[StatementImportRow, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class CategorizationRule:
+    id: str
+    merchant_key: str
+    account_code: str
+    account_name: str
+    times_used: int
+    updated_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class MonthlyCashFlow:
+    month: str
+    currency: str
+    income_minor: int
+    spent_minor: int
+    net_minor: int
+    savings_rate: float | None

@@ -28,6 +28,7 @@ from .models import (
     StatementImportBatch,
     StatementImportRow,
 )
+from .rules import RuleService
 
 _DATE_HEADERS = ("date", "transactiondate", "posteddate", "postingdate")
 _DESCRIPTION_HEADERS = ("description", "merchant", "name", "memo", "details")
@@ -69,6 +70,7 @@ class StatementImportService:
             return self.get_batch(existing["id"])
 
         parsed_rows = _parse_csv(csv_text, convention)
+        rules = RuleService(self.ledger)
         batch_id = str(uuid4())
         created_at = _utc_now_iso()
         staged: list[dict[str, object]] = []
@@ -87,13 +89,9 @@ class StatementImportService:
                 )
                 if match_id is not None:
                     workflow_status = ImportRowStatus.MATCHED
-            suggested_code = None
-            if account.type is AccountType.ASSET:
-                suggested_code = (
-                    "Expenses:Other" if parsed["amount_minor"] < 0 else "Income:Other"
-                )
-            elif account.type is AccountType.LIABILITY and parsed["amount_minor"] < 0:
-                suggested_code = "Expenses:Other"
+            suggested_code = rules.suggest(
+                parsed["description"], exclude_account_id=account.id
+            ) or _default_suggestion(account, parsed["amount_minor"])
             suggested = (
                 self.ledger.connection.execute(
                     "SELECT id FROM accounts WHERE code = ?", (suggested_code,)
@@ -266,6 +264,7 @@ class StatementImportService:
                 """,
                 (transaction.id, reviewed_by, _utc_now_iso(), row_id),
             )
+        RuleService(self.ledger).learn(row["description"], category.code)
         return self.get_row(row_id)
 
     def ignore_row(self, row_id: str, *, reviewed_by: str) -> StatementImportRow:
@@ -409,6 +408,14 @@ def _parse_csv(
     if len(parsed) > 5_000:
         raise ValueError("one import is limited to 5,000 rows")
     return parsed
+
+
+def _default_suggestion(account: Account, amount_minor: int) -> str | None:
+    if account.type is AccountType.ASSET:
+        return "Expenses:Other" if amount_minor < 0 else "Income:Other"
+    if account.type is AccountType.LIABILITY and amount_minor < 0:
+        return "Expenses:Other"
+    return None
 
 
 def _row_from_record(row: object, account: Account) -> StatementImportRow:
