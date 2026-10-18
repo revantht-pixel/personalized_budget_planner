@@ -7,7 +7,7 @@ from datetime import datetime, timezone
 
 from .budgets import BudgetService, validate_month
 from .ledger import Ledger, _validate_currency
-from .models import CategorySpend, MonthlySpendingSummary, SavingsInsight
+from .models import CategorySpend, MonthlyCashFlow, MonthlySpendingSummary, SavingsInsight
 
 
 class AnalyticsService:
@@ -87,6 +87,54 @@ class AnalyticsService:
             categories=tuple(categories),
             insights=insights,
         )
+
+    def cash_flow(
+        self, *, month: str, currency: str = "USD", months: int = 6
+    ) -> tuple[MonthlyCashFlow, ...]:
+        """Income, spending, and net for ``month`` and the months before it, oldest first."""
+
+        month = validate_month(month)
+        currency = _validate_currency(currency)
+        if isinstance(months, bool) or not isinstance(months, int) or not 1 <= months <= 24:
+            raise ValueError("months must be between 1 and 24")
+        current_start, _ = _month_bounds(month)
+        start = _shift_month(current_start, -(months - 1))
+        end = _shift_month(current_start, 1)
+        rows = self.ledger.connection.execute(
+            """
+            SELECT substr(t.effective_at, 1, 7) AS month, a.type,
+                   coalesce(sum(p.amount_minor), 0) AS amount_minor
+            FROM postings p
+            JOIN accounts a ON a.id = p.account_id
+            JOIN transactions t ON t.id = p.transaction_id
+            WHERE t.status = 'POSTED'
+              AND a.type IN ('INCOME', 'EXPENSE')
+              AND a.currency = ?
+              AND t.effective_at >= ?
+              AND t.effective_at < ?
+            GROUP BY 1, 2
+            """,
+            (currency, start.isoformat(timespec="microseconds"), end.isoformat(timespec="microseconds")),
+        ).fetchall()
+        totals = {(row["month"], row["type"]): row["amount_minor"] for row in rows}
+        result: list[MonthlyCashFlow] = []
+        for offset in range(months):
+            key = _shift_month(start, offset).strftime("%Y-%m")
+            # Income accounts carry credit (negative) balances; flip to a positive amount.
+            income = -totals.get((key, "INCOME"), 0)
+            spent = totals.get((key, "EXPENSE"), 0)
+            net = income - spent
+            result.append(
+                MonthlyCashFlow(
+                    month=key,
+                    currency=currency,
+                    income_minor=income,
+                    spent_minor=spent,
+                    net_minor=net,
+                    savings_rate=round(net / income, 4) if income > 0 else None,
+                )
+            )
+        return tuple(result)
 
     def _expense_totals(
         self, start: datetime, end: datetime, currency: str

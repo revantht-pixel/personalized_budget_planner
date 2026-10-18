@@ -4,29 +4,29 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="description" content="A local-first personal finance dashboard">
-  <title>Financial Engine</title>
+  <title>Budget Planner</title>
   <link rel="stylesheet" href="/styles.css">
 </head>
 <body>
   <div class="app-shell">
     <aside class="sidebar">
-      <a class="brand" href="#overview" aria-label="Financial Engine home">
-        <span class="brand-mark">F</span>
-        <span>Financial Engine</span>
+      <a class="brand" href="#overview" aria-label="Budget Planner home">
+        <span class="brand-mark">B</span>
+        <span>Budget Planner</span>
       </a>
       <nav class="primary-nav" aria-label="Primary navigation">
         <a class="nav-item active" href="#overview"><span>⌂</span> Overview</a>
         <a class="nav-item" href="#accounts"><span>▤</span> Accounts</a>
         <a class="nav-item" href="#activity"><span>↕</span> Transactions</a>
         <a class="nav-item" href="#spending"><span>◫</span> Budget</a>
-        <button class="nav-item nav-button" id="review-nav"><span>✓</span> Review <b id="review-badge" hidden>0</b></button>
-        <button class="nav-item nav-button muted" id="ai-nav"><span>✦</span> AI assistant</button>
+        <a class="nav-item" href="#cash-flow"><span>⇅</span> Cash flow</a>
+        <button class="nav-item nav-button" id="review-nav"><span>✓</span> To review <b id="review-badge" hidden>0</b></button>
+        <button class="nav-item nav-button" id="rules-nav" data-open="rules-dialog"><span>⚑</span> Category rules</button>
       </nav>
       <div class="ai-status">
         <span class="status-dot"></span>
-        <div><strong>AI is optional</strong><small>Not configured · Core app active</small></div>
+        <div><strong>Private and local</strong><small>Your data stays on this computer.</small></div>
       </div>
-      <div class="privacy-note">Your local ledger remains the source of truth.</div>
     </aside>
 
     <main class="main-content" id="overview">
@@ -59,6 +59,22 @@
         <article class="metric-card highlight"><span>Budget remaining</span><strong id="budget-remaining">$—</strong><small id="budget-context">Set a plan to track this</small></article>
       </section>
 
+      <section class="panel cash-flow-panel" id="cash-flow" aria-labelledby="cash-flow-title">
+        <div class="panel-heading">
+          <div><p class="eyebrow">Cash flow</p><h2 id="cash-flow-title">Money in vs. money out</h2></div>
+          <span class="savings-rate" id="savings-rate"></span>
+        </div>
+        <div class="cash-flow-body">
+          <div class="cash-flow-figures">
+            <div><span>Money in</span><strong id="cash-in">$—</strong></div>
+            <div><span>Money out</span><strong id="cash-out">$—</strong></div>
+            <div class="cash-net"><span id="cash-net-label">Left over</span><strong id="cash-net">$—</strong></div>
+          </div>
+          <div class="cash-flow-chart" id="cash-flow-chart" role="img" aria-label="Income and spending for the last six months"></div>
+        </div>
+        <div class="chart-legend"><span class="legend-in">Money in</span><span class="legend-out">Money out</span></div>
+      </section>
+
       <div class="content-grid">
         <section class="panel spending-panel" id="spending" aria-labelledby="spending-title">
           <div class="panel-heading">
@@ -69,13 +85,13 @@
         </section>
 
         <section class="panel insight-panel" aria-labelledby="insights-title">
-          <div class="panel-heading"><div><p class="eyebrow">Explainable tips</p><h2 id="insights-title">Ways to improve</h2></div><span class="rule-pill">Rules, not AI</span></div>
+          <div class="panel-heading"><div><p class="eyebrow">Tips</p><h2 id="insights-title">Ways to save</h2></div></div>
           <div id="insight-list" class="insight-list"><div class="empty-state compact">Insights appear as your history grows.</div></div>
         </section>
       </div>
 
       <section class="panel activity-panel" id="activity" aria-labelledby="activity-title">
-        <div class="panel-heading"><div><p class="eyebrow">Ledger activity</p><h2 id="activity-title">Recent transactions</h2></div><div class="panel-actions"><span class="verified-label">● Verified postings</span><button class="button secondary compact-button" type="button" data-open="statement-import-dialog">Import CSV</button></div></div>
+        <div class="panel-heading"><div><p class="eyebrow">Activity</p><h2 id="activity-title">Recent transactions</h2></div><div class="panel-actions"><button class="button secondary compact-button" type="button" data-open="statement-import-dialog">Import bank statement</button></div></div>
         <div id="transaction-list" class="transaction-list"><div class="empty-state">Add an account and your first transaction to begin.</div></div>
       </section>
     </main>
@@ -83,8 +99,8 @@
 
   <dialog id="account-dialog">
     <form id="account-form" method="dialog">
-      <div class="dialog-header"><div><p class="eyebrow">Onboarding</p><h2>Add an account</h2></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
-      <p class="dialog-copy">Enter today’s balance once. Future balances are calculated from verified money movement.</p>
+      <div class="dialog-header"><div><p class="eyebrow">New account</p><h2>Add an account</h2></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
+      <p class="dialog-copy">Enter the current balance once. After that, the balance updates automatically as you add transactions.</p>
       <label>Account name<input name="name" required placeholder="Main Checking" autocomplete="off"></label>
       <div class="form-row">
         <label>Account type<select name="kind" id="account-kind" required>
@@ -96,24 +112,23 @@
       </div>
       <label id="credit-limit-field" hidden>Credit limit<div class="money-input"><span>$</span><input name="credit_limit" inputmode="decimal" value="0.00"></div></label>
       <label>Balance as of<input type="date" name="balance_as_of" required></label>
-      <p class="form-note">This creates a balanced opening entry so your history remains auditable.</p>
       <div class="dialog-actions"><button class="button secondary" type="button" data-close>Cancel</button><button class="button primary" type="submit" value="default">Add account</button></div>
     </form>
   </dialog>
 
   <dialog id="transaction-dialog">
     <form id="transaction-form" method="dialog">
-      <div class="dialog-header"><div><p class="eyebrow">Verified entry</p><h2>Add a transaction</h2></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
+      <div class="dialog-header"><div><p class="eyebrow" id="transaction-eyebrow">New</p><h2 id="transaction-dialog-title">Add a transaction</h2></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
       <div class="segmented" role="group" aria-label="Transaction type">
         <label><input type="radio" name="kind" value="expense" checked><span>Expense</span></label>
         <label><input type="radio" name="kind" value="income"><span>Income</span></label>
         <label><input type="radio" name="kind" value="transfer"><span>Transfer</span></label>
       </div>
-      <label>Description<input name="description" required placeholder="Weekly groceries"></label>
-      <label id="merchant-field">Merchant<input name="merchant_name" placeholder="Costco"></label>
+      <input type="hidden" name="editing_id" id="editing-id">
+      <label>What was it?<input name="description" id="transaction-description" required placeholder="Trader Joe's" autocomplete="off"></label>
       <div class="form-row">
-        <label id="account-field">Account<select name="account_code" id="transaction-account" required></select></label>
-        <label id="category-field">Category<select name="category_code" id="transaction-category"></select></label>
+        <label id="account-field"><span id="account-field-label">Paid from</span><select name="account_code" id="transaction-account" required></select></label>
+        <label id="category-field">Category<select name="category_code" id="transaction-category"></select><small class="field-hint" id="category-hint" hidden>Picked from your category rules</small></label>
       </div>
       <div class="form-row" id="transfer-fields" hidden>
         <label>From<select name="from_account_code" id="transfer-from"></select></label>
@@ -123,7 +138,7 @@
         <label>Amount<div class="money-input"><span>$</span><input name="amount" inputmode="decimal" required placeholder="0.00"></div></label>
         <label>Date<input type="date" name="effective_at" required></label>
       </div>
-      <div class="dialog-actions"><button class="button secondary" type="button" data-close>Cancel</button><button class="button primary" type="submit" value="default">Post transaction</button></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close>Cancel</button><button class="button primary" type="submit" value="default" id="transaction-submit">Add transaction</button></div>
     </form>
   </dialog>
 
@@ -142,11 +157,11 @@
       <div class="dialog-header"><div><p class="eyebrow" id="account-detail-kind">Account</p><h2 id="account-detail-name">Account details</h2></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
       <div class="detail-metrics">
         <div><span id="account-primary-label">Available balance</span><strong id="account-primary-balance">$—</strong></div>
-        <div><span>Ledger balance</span><strong id="account-ledger-balance">$—</strong></div>
+        <div><span>Recorded balance</span><strong id="account-ledger-balance">$—</strong></div>
       </div>
       <div class="detail-toolbar">
-        <div><span class="mini-label">Reconciliation</span><strong id="account-reconcile-status">Never reconciled</strong></div>
-        <button class="button secondary" id="start-reconcile" type="button">Reconcile statement</button>
+        <div><span class="mini-label">Statement check</span><strong id="account-reconcile-status">Not checked yet</strong></div>
+        <button class="button secondary" id="start-reconcile" type="button">Check against statement</button>
       </div>
       <div class="subsection-heading"><h3>Account activity</h3><span id="account-activity-count"></span></div>
       <div id="account-activity" class="transaction-list detail-list"></div>
@@ -155,56 +170,64 @@
 
   <dialog id="transaction-detail-dialog" class="detail-dialog">
     <div class="dialog-body">
-      <div class="dialog-header"><div><p class="eyebrow">Verified transaction</p><h2 id="transaction-detail-title">Transaction</h2><p class="detail-subtitle" id="transaction-detail-subtitle"></p></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
+      <div class="dialog-header"><div><p class="eyebrow">Transaction</p><h2 id="transaction-detail-title">Transaction</h2><p class="detail-subtitle" id="transaction-detail-subtitle"></p></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
+      <h3 class="posting-heading">Where the money moved</h3>
       <div id="posting-list" class="posting-list"></div>
       <div class="transaction-metadata" id="transaction-metadata"></div>
-      <form id="reversal-form" class="reversal-form">
-        <div class="subsection-heading"><div><h3>Correct this transaction</h3><p>Creates an equal-and-opposite entry without changing history.</p></div></div>
-        <div class="form-row"><label>Reason<input name="reason" required placeholder="Duplicate or incorrect entry"></label><label>Reversal date<input name="effective_at" type="date" required></label></div>
-        <button class="button danger" type="submit">Create reversal</button>
-      </form>
+      <div class="transaction-actions" id="transaction-actions">
+        <p id="transaction-locked-note" hidden></p>
+        <button class="button danger" type="button" id="delete-transaction">Delete</button>
+        <button class="button primary" type="button" id="edit-transaction">Edit</button>
+      </div>
     </div>
   </dialog>
 
   <dialog id="review-dialog" class="wide-dialog">
     <div class="dialog-body">
-      <div class="dialog-header"><div><p class="eyebrow">Approval boundary</p><h2>Needs review</h2><p class="detail-subtitle">Imports, rules, and optional AI suggestions remain proposals until you approve them.</p></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
+      <div class="dialog-header"><div><p class="eyebrow">Inbox</p><h2>Transactions to review</h2><p class="detail-subtitle">Nothing from a statement is added until you confirm it. Check the categories, then add them all at once.</p></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
       <div id="review-list" class="review-list"></div>
     </div>
   </dialog>
 
   <dialog id="reconciliation-dialog">
     <form id="reconciliation-form">
-      <div class="dialog-header"><div><p class="eyebrow">Statement check</p><h2>Reconcile an account</h2></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
-      <p class="dialog-copy">Compare the ledger to a bank or card statement. Completion is only allowed when the difference is exactly zero.</p>
+      <div class="dialog-header"><div><p class="eyebrow">Statement check</p><h2>Check against a statement</h2></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
+      <p class="dialog-copy">Enter the ending balance from your bank or card statement to confirm your records match it to the cent.</p>
       <label>Account<select name="account_code" id="reconciliation-account" required></select></label>
       <div class="form-row"><label>Statement ending date<input type="date" name="statement_date" required></label><label><span id="statement-balance-label">Statement balance</span><div class="money-input"><span>$</span><input name="statement_balance" inputmode="decimal" required placeholder="0.00"></div></label></div>
       <button class="button secondary full-button" type="submit">Compare balances</button>
       <div id="reconciliation-result" class="reconciliation-result" hidden>
-        <div><span>Statement</span><strong id="reconcile-statement">$—</strong></div><div><span>Ledger</span><strong id="reconcile-ledger">$—</strong></div><div><span>Difference</span><strong id="reconcile-difference">$—</strong></div>
+        <div><span>Statement</span><strong id="reconcile-statement">$—</strong></div><div><span>Your records</span><strong id="reconcile-ledger">$—</strong></div><div><span>Difference</span><strong id="reconcile-difference">$—</strong></div>
         <p id="reconcile-message"></p>
       </div>
-      <div class="dialog-actions"><button class="button secondary" type="button" data-close>Cancel</button><button class="button primary" id="complete-reconciliation" type="button" disabled>Complete reconciliation</button></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close>Cancel</button><button class="button primary" id="complete-reconciliation" type="button" disabled>Mark as matched</button></div>
     </form>
   </dialog>
 
   <dialog id="statement-import-dialog">
     <form id="statement-import-form">
-      <div class="dialog-header"><div><p class="eyebrow">Non-AI ingestion</p><h2>Import a statement</h2></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
-      <p class="dialog-copy">Upload a CSV with Date, Description, and Amount columns. Debit/Credit columns and optional Status or Transaction ID columns are also supported.</p>
+      <div class="dialog-header"><div><p class="eyebrow">Bank statement</p><h2>Import transactions</h2></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
+      <p class="dialog-copy">Download a CSV file from your bank's website and upload it here. You'll review everything before it's added.</p>
       <label>Account<select name="account_code" id="import-account" required></select></label>
-      <label>Amount convention<select name="amount_convention" id="amount-convention"><option value="ACCOUNT_SIGNED">Positive means money into the account</option><option value="CHARGES_POSITIVE">Positive means a charge (typical credit-card export)</option></select></label>
-      <label>Statement CSV<input type="file" name="statement_file" accept=".csv,text/csv" required></label>
-      <div class="import-safety"><strong>Pending stays pending</strong><span>Only cleared, reviewed rows can become ledger transactions. Existing matching entries are not duplicated.</span></div>
-      <div class="dialog-actions"><button class="button secondary" type="button" data-close>Cancel</button><button class="button primary" type="submit">Stage statement</button></div>
+      <label>In this file, a positive amount means…<select name="amount_convention" id="amount-convention"><option value="ACCOUNT_SIGNED">Money coming in (most bank accounts)</option><option value="CHARGES_POSITIVE">A purchase or charge (most credit cards)</option></select></label>
+      <label>CSV file<input type="file" name="statement_file" accept=".csv,text/csv" required></label>
+      <div class="import-safety"><strong>No duplicates, no surprises</strong><span>Transactions you've already entered are recognized and skipped. Pending charges wait until they clear.</span></div>
+      <div class="dialog-actions"><button class="button secondary" type="button" data-close>Cancel</button><button class="button primary" type="submit">Upload and review</button></div>
     </form>
   </dialog>
 
   <dialog id="import-review-dialog" class="wide-dialog">
     <div class="dialog-body">
-      <div class="dialog-header"><div><p class="eyebrow">Statement staging</p><h2 id="import-review-title">Review import</h2><p class="detail-subtitle" id="import-review-subtitle"></p></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
+      <div class="dialog-header"><div><p class="eyebrow">Review import</p><h2 id="import-review-title">Review import</h2><p class="detail-subtitle" id="import-review-subtitle"></p></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
       <div class="import-summary" id="import-summary"></div>
       <div class="import-row-list" id="import-row-list"></div>
+    </div>
+  </dialog>
+
+  <dialog id="rules-dialog" class="wide-dialog">
+    <div class="dialog-body">
+      <div class="dialog-header"><div><p class="eyebrow">Automatic categories</p><h2>Category rules</h2><p class="detail-subtitle">When you categorize a merchant, it's remembered here and suggested next time. Remove a rule to stop the suggestion.</p></div><button class="icon-button" type="button" data-close aria-label="Close">×</button></div>
+      <div id="rules-list" class="rules-list"></div>
     </div>
   </dialog>
 

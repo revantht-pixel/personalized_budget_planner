@@ -1,6 +1,6 @@
 """SQLite schema and database-level ledger guards."""
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 SCHEMA_SQL = r"""
 PRAGMA foreign_keys = ON;
@@ -209,6 +209,17 @@ CREATE INDEX IF NOT EXISTS statement_import_rows_external
 
 CREATE INDEX IF NOT EXISTS statement_import_rows_hash
     ON statement_import_rows(account_id, row_hash);
+
+-- Learned "merchant -> category" rules. These are suggestions for review only;
+-- they never post anything on their own.
+CREATE TABLE IF NOT EXISTS categorization_rules (
+    id TEXT PRIMARY KEY,
+    merchant_key TEXT NOT NULL UNIQUE CHECK (length(trim(merchant_key)) > 0),
+    account_id TEXT NOT NULL REFERENCES accounts(id),
+    times_used INTEGER NOT NULL DEFAULT 0 CHECK (times_used >= 0),
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
 
 -- A posted transaction is only reachable through a balanced DRAFT -> POSTED
 -- transition. Reports ignore drafts, so partially-created entries never leak.

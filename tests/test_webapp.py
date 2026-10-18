@@ -6,6 +6,7 @@ import threading
 import unittest
 from datetime import datetime, timezone
 from pathlib import Path
+from urllib.error import HTTPError
 from urllib.request import Request, urlopen
 from urllib.parse import quote
 from uuid import uuid4
@@ -230,11 +231,92 @@ class WebAppTests(unittest.TestCase):
     def test_dashboard_static_entrypoint_is_served(self) -> None:
         with urlopen(self.base_url + "/", timeout=5) as response:
             content = response.read().decode("utf-8")
-        self.assertIn("Financial Engine", content)
-        self.assertIn("Rules, not AI", content)
+        self.assertIn("Budget Planner", content)
+        self.assertIn("Ways to save", content)
 
     def test_health_endpoint_checks_database(self) -> None:
         self.assertEqual(self.request("/healthz"), {"status": "ok"})
+
+    def raw_status(
+        self, path: str, *, body: bytes | None = None, headers: dict[str, str]
+    ) -> tuple[int, dict[str, str]]:
+        request = Request(
+            self.base_url + path,
+            data=body,
+            headers=headers,
+            method="POST" if body is not None else "GET",
+        )
+        try:
+            with urlopen(request, timeout=5) as response:
+                return response.status, dict(response.headers)
+        except HTTPError as error:
+            with error:
+                return error.code, dict(error.headers)
+
+    def test_cross_site_writes_are_rejected(self) -> None:
+        body = json.dumps(
+            {
+                "name": "Injected",
+                "kind": "CHECKING",
+                "opening_balance_minor": 1,
+                "balance_as_of": "2026-07-01",
+            }
+        ).encode("utf-8")
+        # A form or no-cors fetch from another site can only send simple content types.
+        status, _ = self.raw_status(
+            "/api/accounts", body=body, headers={"Content-Type": "text/plain"}
+        )
+        self.assertEqual(status, 403)
+        status, _ = self.raw_status(
+            "/api/accounts",
+            body=body,
+            headers={"Content-Type": "application/json", "Origin": "https://evil.example"},
+        )
+        self.assertEqual(status, 403)
+        status, _ = self.raw_status(
+            "/api/accounts",
+            body=body,
+            headers={"Content-Type": "application/json", "Sec-Fetch-Site": "cross-site"},
+        )
+        self.assertEqual(status, 403)
+        overview = self.request("/api/overview?month=2026-07")
+        self.assertEqual(overview["accounts"], [])
+
+    def test_same_origin_browser_write_is_allowed(self) -> None:
+        status, _ = self.raw_status(
+            "/api/budgets",
+            body=json.dumps(
+                {"month": "2026-07", "allocations": {"Expenses:Dining": 100}}
+            ).encode("utf-8"),
+            headers={
+                "Content-Type": "application/json; charset=utf-8",
+                "Origin": self.base_url,
+                "Sec-Fetch-Site": "same-origin",
+            },
+        )
+        self.assertEqual(status, 201)
+
+    def test_foreign_host_header_is_rejected(self) -> None:
+        status, _ = self.raw_status(
+            "/api/overview", headers={"Host": "attacker.example"}
+        )
+        self.assertEqual(status, 403)
+
+    def test_security_headers_are_sent(self) -> None:
+        status, headers = self.raw_status("/", headers={})
+        self.assertEqual(status, 200)
+        self.assertEqual(headers["X-Frame-Options"], "DENY")
+        self.assertIn("frame-ancestors 'none'", headers["Content-Security-Policy"])
+
+    def test_oversized_amount_is_a_validation_error(self) -> None:
+        status, _ = self.raw_status(
+            "/api/budgets",
+            body=json.dumps(
+                {"month": "2026-07", "allocations": {"Expenses:Dining": 10**20}}
+            ).encode("utf-8"),
+            headers={"Content-Type": "application/json"},
+        )
+        self.assertEqual(status, 400)
 
 
 if __name__ == "__main__":

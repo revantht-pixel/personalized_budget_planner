@@ -26,9 +26,11 @@ from .models import (
     BankTransactionStatus,
     BalanceSnapshot,
     BudgetAllocation,
+    CategorizationRule,
     CategorySpend,
     JournalTransaction,
     MonthlyBudget,
+    MonthlyCashFlow,
     MonthlySpendingSummary,
     Posting,
     PostingInput,
@@ -45,6 +47,7 @@ from .analytics import AnalyticsService
 from .budgets import BudgetService
 from .proposals import ProposalService
 from .reconciliation import ReconciliationService
+from .rules import RuleService, merchant_key
 from .statement_imports import StatementImportService
 
 __all__ = [
@@ -61,6 +64,7 @@ __all__ = [
     "BankTransactionStatus",
     "BudgetAllocation",
     "BudgetService",
+    "CategorizationRule",
     "CategorySpend",
     "CurrencyMismatch",
     "DuplicateAccount",
@@ -71,6 +75,7 @@ __all__ = [
     "Ledger",
     "LedgerError",
     "MonthlyBudget",
+    "MonthlyCashFlow",
     "MonthlySpendingSummary",
     "Posting",
     "PostingInput",
@@ -82,6 +87,7 @@ __all__ = [
     "ReconciliationPreview",
     "ReconciliationRecord",
     "ReconciliationService",
+    "RuleService",
     "SavingsInsight",
     "StatementImportBatch",
     "StatementImportNotFound",
@@ -90,4 +96,5 @@ __all__ = [
     "StatementImportStateError",
     "TransactionNotFound",
     "TransactionProposal",
+    "merchant_key",
 ]

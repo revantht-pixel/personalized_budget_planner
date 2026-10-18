@@ -602,6 +602,99 @@ class Ledger:
             transaction_id=None,
         )
 
+    def replace_transaction(
+        self,
+        transaction_id: str,
+        *,
+        effective_at: datetime,
+        description: str,
+        postings: Sequence[PostingInput],
+        merchant_name: str | None = None,
+    ) -> JournalTransaction:
+        """Edit a transaction without rewriting history.
+
+        In one database transaction, the original is reversed on its own date (so it
+        disappears from that period's reports) and the corrected version is posted.
+        Both share the original's correlation id so the edit trail stays linked.
+        """
+
+        original = self.get_transaction(transaction_id)
+        if original.reversal_of_transaction_id is not None:
+            raise InvalidTransaction("a correction entry cannot be edited")
+        description = _required_text(description, "description")
+        replacement_postings = tuple(postings)
+        self._validate_posting_inputs(replacement_postings)
+        merchant_name = _optional_text(merchant_name)
+        correlation_id = original.correlation_id or original.id
+        effective_at_iso = _as_utc_iso(effective_at)
+
+        reversal_postings = tuple(
+            PostingInput(
+                account_code=posting.account_code,
+                amount_minor=-posting.amount_minor,
+                memo=f"Reverses posting {posting.id}",
+                tags={**posting.tags, "system.reversal": "true"},
+            )
+            for posting in original.postings
+        )
+        reversal_effective_iso = _as_utc_iso(original.effective_at)
+        reversal_description = f"Edited: {original.description}"
+        replacement_id = str(uuid4())
+        with self._write():
+            already_reversed = self.connection.execute(
+                "SELECT 1 FROM transactions WHERE reversal_of_transaction_id = ?",
+                (original.id,),
+            ).fetchone()
+            if already_reversed is not None:
+                raise InvalidTransaction("this transaction was already deleted or edited")
+            self._insert_and_post(
+                transaction_id=str(uuid4()),
+                effective_at_iso=reversal_effective_iso,
+                description=reversal_description,
+                currency=original.currency,
+                merchant_name=original.merchant_name,
+                source_type="REVERSAL",
+                source_id=original.id,
+                content_hash=_content_hash(
+                    effective_at=reversal_effective_iso,
+                    description=reversal_description,
+                    currency=original.currency,
+                    merchant_name=original.merchant_name,
+                    source_type="REVERSAL",
+                    source_id=original.id,
+                    correlation_id=correlation_id,
+                    reversal_of_transaction_id=original.id,
+                    postings=reversal_postings,
+                ),
+                correlation_id=correlation_id,
+                reversal_of_transaction_id=original.id,
+                postings=reversal_postings,
+            )
+            self._insert_and_post(
+                transaction_id=replacement_id,
+                effective_at_iso=effective_at_iso,
+                description=description,
+                currency=original.currency,
+                merchant_name=merchant_name,
+                source_type="EDIT",
+                source_id=original.id,
+                content_hash=_content_hash(
+                    effective_at=effective_at_iso,
+                    description=description,
+                    currency=original.currency,
+                    merchant_name=merchant_name,
+                    source_type="EDIT",
+                    source_id=original.id,
+                    correlation_id=correlation_id,
+                    reversal_of_transaction_id=None,
+                    postings=replacement_postings,
+                ),
+                correlation_id=correlation_id,
+                reversal_of_transaction_id=None,
+                postings=replacement_postings,
+            )
+        return self.get_transaction(replacement_id)
+
     def get_transaction(self, transaction_id: str) -> JournalTransaction:
         row = self.connection.execute(
             "SELECT * FROM transactions WHERE id = ? AND status = 'POSTED'",
@@ -652,14 +745,22 @@ class Ledger:
             postings=tuple(postings),
         )
 
-    def list_transactions(self, *, limit: int = 50) -> tuple[JournalTransaction, ...]:
+    def list_transactions(
+        self, *, limit: int = 50, hide_corrected: bool = False
+    ) -> tuple[JournalTransaction, ...]:
+        """List posted transactions, newest first.
+
+        ``hide_corrected`` leaves out reversed originals and their reversal entries,
+        which is what a person expects to see after deleting or editing.
+        """
+
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
             raise ValueError("limit must be between 1 and 500")
         rows = self.connection.execute(
-            """
-            SELECT id FROM transactions
-            WHERE status = 'POSTED'
-            ORDER BY effective_at DESC, created_at DESC
+            f"""
+            SELECT t.id FROM transactions t
+            WHERE t.status = 'POSTED' {_HIDE_CORRECTED_SQL if hide_corrected else ""}
+            ORDER BY t.effective_at DESC, t.created_at DESC
             LIMIT ?
             """,
             (limit,),
@@ -667,17 +768,18 @@ class Ledger:
         return tuple(self.get_transaction(row["id"]) for row in rows)
 
     def list_transactions_for_account(
-        self, account_code: str, *, limit: int = 50
+        self, account_code: str, *, limit: int = 50, hide_corrected: bool = False
     ) -> tuple[JournalTransaction, ...]:
         account = self.get_account(account_code)
         if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 500:
             raise ValueError("limit must be between 1 and 500")
         rows = self.connection.execute(
-            """
+            f"""
             SELECT DISTINCT t.id, t.effective_at, t.created_at
             FROM transactions t
             JOIN postings p ON p.transaction_id = t.id
             WHERE t.status = 'POSTED' AND p.account_id = ?
+                {_HIDE_CORRECTED_SQL if hide_corrected else ""}
             ORDER BY t.effective_at DESC, t.created_at DESC
             LIMIT ?
             """,
@@ -727,6 +829,15 @@ class Ledger:
             total += posting.amount_minor
         if total != 0:
             raise InvalidTransaction(f"postings must balance to zero; difference is {total}")
+
+
+_HIDE_CORRECTED_SQL = """
+    AND t.reversal_of_transaction_id IS NULL
+    AND NOT EXISTS (
+        SELECT 1 FROM transactions r
+        WHERE r.reversal_of_transaction_id = t.id AND r.status = 'POSTED'
+    )
+"""
 
 
 def _content_hash(**content: object) -> str:

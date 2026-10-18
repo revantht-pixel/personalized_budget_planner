@@ -31,6 +31,14 @@ The detailed plan review and recommended architecture are in
 - Statement reconciliation that can only complete at an exact zero difference.
 - Non-AI CSV statement import with pending-row staging, deterministic ledger matching,
   reviewed counter-account selection, and content-idempotent re-imports.
+- Merchant-to-category rules learned from every categorized transaction. They pre-fill
+  import suggestions and the add-transaction form, and can be removed under **Category rules**.
+  Rules only suggest; nothing is posted without review.
+- Bulk review: select many statement rows and add or skip them in one step. Categorizing one row
+  fills in the same merchant's other rows.
+- Edit and delete from the transaction details. Both are recorded as reversals, so history stays
+  auditable, and corrected entries are hidden from activity lists.
+- A cash-flow card showing money in, money out, what was left over, and a six-month trend.
 
 Still intentionally out of scope for this slice: live bank-provider connections, automatic pending-to-
 cleared provider updates, recurring schedules, FX, hosted authentication/encryption,
@@ -70,6 +78,11 @@ The Compose configuration deliberately binds to `127.0.0.1`, runs as a non-root 
 capabilities, and keeps the container filesystem read-only except for its data volume. This version
 does not include authentication. Do not change the port binding to `0.0.0.0` or expose it to the
 internet.
+
+Write requests must be same-origin JSON, and requests with an unrecognized `Host` header are
+rejected. This protects against cross-site request forgery and DNS rebinding from websites you
+visit. If you reach the app through a hostname other than `localhost` or `127.0.0.1`, allow it
+with `--allowed-host <name>`.
 
 ### Back up local data
 
